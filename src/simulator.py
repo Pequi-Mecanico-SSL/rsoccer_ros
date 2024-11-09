@@ -1,5 +1,7 @@
 import robosim
 from typing import List
+import cv2
+import numpy as np
 
 import rclpy
 from rclpy.node import Node
@@ -10,23 +12,33 @@ class SimulatorNode(Node):
     def __init__(self):
         super().__init__('simulator')
 
-        field_type = 2  # 0 for Division A, 1 for Division B, 2 Hardware Challenges
-        self.n_robots_blue = 2  # number of blue robots
-        self.n_robots_yellow = 2  # number of yellow robots
-        time_step_ms = 25  # time step in milliseconds
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('blue_robot_count', 3),
+                ('yellow_robot_count', 3),
+                ('frequency', 60),
+            ]
+        )
+        self.blue_robot_count = self.get_parameter('blue_robot_count').get_parameter_value().integer_value
+        self.yellow_robot_count = self.get_parameter('yellow_robot_count').get_parameter_value().integer_value
+        frequency = self.get_parameter('frequency').get_parameter_value().integer_value
+        time_step_ms = 1000 // frequency
+
+        field_type = 1  # 0 for Division A, 1 for Division B, 2 Hardware Challenges
         # ball initial position [x, y, v_x, v_y] in meters and meter/s
         ball_pos = [0.0, 0.0, 0.0, 0.0]
 
         # robots initial positions [[x, y, angle], [x, y, angle]...], where [[id_0], [id_1]...]
         # Units are meters and degrees
-        blue_robots_pos = [[-0.2, 0.0, 0.0], [-0.4, 0.0, 0.0]]
-        yellow_robots_pos = [[0.2, 0.0, 0.0], [0.4, 0.0, 0.0]]
+        blue_robots_pos = [[-1 * i - 1, 0.0, 0.0] for i in range(self.blue_robot_count)]
+        yellow_robots_pos = [[1 * i + 1, 0.0, 0.0] for i in range(self.yellow_robot_count)]
 
         # Init simulator
         self.sim = robosim.SSL(
             field_type,
-            self.n_robots_blue,
-            self.n_robots_yellow,
+            self.blue_robot_count,
+            self.yellow_robot_count,
             time_step_ms,
             ball_pos,
             blue_robots_pos,
@@ -37,28 +49,23 @@ class SimulatorNode(Node):
 
         # /simulator/robots_poses/blue/0, /simulator/robots_poses/blue/1, ...
         self.pose_publishers = []
-        for i in range(self.n_robots_blue):
+        for i in range(self.blue_robot_count):
             self.pose_publishers.append(
                 self.create_publisher(Pose2D, f'/simulator/poses/blue/robot{i}', 10)
             )
-        for i in range(self.n_robots_yellow):
+        for i in range(self.yellow_robot_count):
             self.pose_publishers.append(
                 self.create_publisher(Pose2D, f'/simulator/poses/yellow/robot{i}', 10)
             )
         
-        self.latest_robot_actions = [[0.0 for _ in range(6)] for _ in range(self.n_robots_blue + self.n_robots_yellow)]
+        self.latest_robot_actions = [[0.0 for _ in range(6)] for _ in range(self.blue_robot_count + self.yellow_robot_count)]
         
-        self.robot_cmd_subscribers = []
-        for i in range(self.n_robots_blue):
-            self.robot_cmd_subscribers.append(
-                self.create_subscription(Twist, f'/simulator/cmd/blue/robot{i}',
-                                         lambda msg: self.robot_cmd_callback(i, msg), 10)
-            )
-        for i in range(self.n_robots_yellow):
-            self.robot_cmd_subscribers.append(
-                self.create_subscription(Twist, f'/simulator/cmd/yellow/robot{i}',
-                                         lambda msg: self.robot_cmd_callback(self.n_robots_blue + i, msg), 10)
-            )
+        for i in range(self.blue_robot_count):
+            self.create_subscription(Twist, f'/simulator/cmd/blue/robot{i}',
+                                        lambda msg, i=i: self.robot_cmd_callback(i, msg), 10)
+        for i in range(self.yellow_robot_count):
+            self.create_subscription(Twist, f'/simulator/cmd/yellow/robot{i}',
+                                        lambda msg, i=i: self.robot_cmd_callback(self.blue_robot_count + i, msg), 10)
     
         timer_period = time_step_ms / 1000.0  # seconds
         self.timer = self.create_timer(timer_period, self.update_state_and_publish)
@@ -76,7 +83,14 @@ class SimulatorNode(Node):
             0, # kick_v_y
             0, # dribbler
         ]
-    
+
+    # convert degrees to radians, to range [-pi, pi]
+    def to_rad(self, deg):
+        rad = np.deg2rad(deg)
+        if rad > np.pi:
+            rad -= 2 * np.pi
+        return rad
+
     def update_state_and_publish(self):
         self.sim.step(self.latest_robot_actions)
 
@@ -93,19 +107,23 @@ class SimulatorNode(Node):
         ball_msg.theta = 0.0
         self.ball_publisher.publish(ball_msg)
         
-        for i in range(self.n_robots_blue):
+        for i in range(self.blue_robot_count):
             msg = Pose2D()
             msg.x = state[5 + i * 11]
             msg.y = state[6 + i * 11]
-            msg.theta = state[7 + i * 11]
+            # msg.theta = state[7 + i * 11]
+            theta_deg = state[7 + i * 11]
+            msg.theta = self.to_rad(theta_deg)
             self.pose_publishers[i].publish(msg)
         
-        for i in range(self.n_robots_yellow):
+        for i in range(self.yellow_robot_count):
             msg = Pose2D()
-            msg.x = state[5 + self.n_robots_blue * 11 + i * 11]
-            msg.y = state[6 + self.n_robots_blue * 11 + i * 11]
-            msg.theta = state[7 + self.n_robots_blue * 11 + i * 11]
-            self.pose_publishers[self.n_robots_blue + i].publish(msg)
+            msg.x = state[5 + self.blue_robot_count * 11 + i * 11]
+            msg.y = state[6 + self.blue_robot_count * 11 + i * 11]
+            # msg.theta = state[7 + self.blue_robot_count * 11 + i * 11]
+            theta_deg = state[7 + self.blue_robot_count * 11 + i * 11]
+            msg.theta = self.to_rad(theta_deg)
+            self.pose_publishers[self.blue_robot_count + i].publish(msg)
 
 
 def main(args=None):
