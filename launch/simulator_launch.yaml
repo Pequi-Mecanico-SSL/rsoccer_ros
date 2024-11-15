@@ -41,6 +41,24 @@ launch:
         value: $(var frequency)
 
 - node:
+    pkg: "strategy"
+    exec: "strategy"
+    name: "strategy"
+    param:
+    -
+        name: color
+        value: "blue"
+    -
+        name: blue_robot_count
+        value: $(var blue_robot_count)
+    -
+        name: yellow_robot_count
+        value: $(var yellow_robot_count)
+    -
+        name: frequency
+        value: $(var frequency)
+
+- node:
     pkg: "rsim_ros"
     exec: "gamepad"
     name: "gamepad"
